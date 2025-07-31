@@ -1,63 +1,178 @@
-pipeline {
+ pipeline {
     agent any
-
+ 
     stages {
-        stage('Unit Tests - Backend') {
+        stage('Execute Unit Tests') {
+            parallel {
+                stage('Unit Tests - Backend') {
+                    agent {
+                        docker {
+                            image 'snakee/golang-junit:1.21'
+                            reuseNode true // ensures container uses same workspace and Jenkins node
+                        }
+                    }
+                    steps {
+                        dir('bugtracker-backend') {
+                            sh '''
+                                # Set Go cache to a writable location
+                                export GOCACHE="$PWD/.cache/go-build"
+                                export GOMODCACHE="$PWD/.cache/go-mod"
+                                
+                                # Create cache directories
+                                mkdir -p "$GOCACHE" "$GOMODCACHE"
+                                
+                                # Run the tests
+                                go test -v ./... 2>&1 | go-junit-report > test-results.xml
+
+                                # Generate coverage report
+                                go test -coverprofile=coverage.out -covermode=atomic ./...
+                                go tool cover -html=coverage.out -o coverage.html
+
+                                mkdir -p reports
+                                mv coverage.html reports/
+
+                            '''
+                        }
+                    }
+
+                    post {
+                        always {
+                            junit 'bugtracker-backend/test-results.xml'
+                            publishHTML target: [
+                                reportDir: 'bugtracker-backend/reports',
+                                reportFiles: 'coverage.html',
+                                reportName: 'Backend Coverage Report'
+                            ]
+                        }
+                    }
+                }
+
+                stage('Unit Tests - Frontend') {
+                    agent {
+                        docker {
+                            image 'node:20-alpine'
+                            reuseNode true // ensures container uses same workspace and Jenkins node
+                        }
+                    }
+                    steps {
+                        dir('bugtracker-frontend') {
+                            sh '''
+                                npm ci
+                                npm test
+                                mkdir -p reports
+                                mv coverage reports/
+                            '''
+                        }
+                    }
+
+                    post {
+                        always {
+                            junit 'bugtracker-frontend/test-results.xml'
+                            publishHTML target: [
+                                reportDir: 'bugtracker-frontend/reports/coverage',
+                                reportFiles: 'index.html',
+                                reportName: 'Frontend Coverage Report'
+                            ]
+                        }
+                    }
+                }
+            }
+        }
+        
+        stage('Launch Application') {
             agent {
                 docker {
-                    image 'snakee/golang-junit:1.21'
-                    args '-u root'
+                    image 'docker:27.5.1'
                     reuseNode true
+                    args '-v /var/run/docker.sock:/var/run/docker.sock -u 0' 
                 }
             }
             steps {
-                dir('bugtracker-backend') {
-                    sh '''
-                        go install github.com/jstemmer/go-junit-report/v2@latest
-                        go test -v ./... 2>&1 | go-junit-report > test-results.xml
+                sh 'docker compose up --build -d'
+            }
+        }
 
-                        # Generate coverage report
-                        go test -coverprofile=coverage.out -covermode=atomic ./...
-                        go tool cover -html=coverage.out -o coverage.html
+        stage('API tests') {
+            agent {
+                docker {
+                    image 'mcr.microsoft.com/playwright:v1.50.0-jammy'
+                    reuseNode true
+                    args '-u 0 --network=host'
+                }
+            }
+            steps {
+                dir('tests-api') {
+                    sh 'npx wait-port http://localhost:8080/api/health -t 30000'
 
-                        mkdir -p reports
-                        mv coverage.html reports/
-                    '''
+                    sh 'npm ci'
+                    sh 'npx playwright test'
                 }
             }
             post {
                 always {
-                    junit 'bugtracker-backend/test-results.xml'
+                    junit 'tests-api/test-results/results.xml'
                     publishHTML target: [
-                        reportDir: 'bugtracker-backend/reports',
-                        reportFiles: 'coverage.html',
-                        reportName: 'Backend Coverage Report'
+                        reportDir: 'tests-api/playwright-report',
+                        reportFiles: 'index.html',
+                        reportName: 'Playwright API Test Report'
                     ]
                 }
             }
         }
 
-        stage('Unit Tests - Frontend') {
+        stage('E2E tests') {
             agent {
                 docker {
-                    image 'node:20-alpine'
-                    args '-u root'
+                    image 'mcr.microsoft.com/playwright:v1.50.0-jammy'
                     reuseNode true
+                    args '-u 0 --network=host'
                 }
             }
             steps {
-                dir('bugtracker-frontend') {
-                    sh '''
-                        npm ci
-                        npm test
-                    '''
+                dir('tests-e2e') {
+                    sh 'npm ci'
+                    sh 'npx playwright test'
                 }
             }
             post {
                 always {
-                    junit 'bugtracker-frontend/junit.xml'
+                    junit 'tests-e2e/test-results/results.xml'
+                    publishHTML target: [
+                        reportDir: 'tests-e2e/playwright-report',
+                        reportFiles: 'index.html',
+                        reportName: 'Playwright E2E Test Report'
+                    ]
                 }
             }
         }
+
+        stage('Performance Tests') {
+            agent {
+                docker {
+                    image 'grafana/k6:latest'
+                    reuseNode true
+                    args '--network=host -u root --entrypoint=""'
+                }
+            }
+            steps {
+                dir('tests-perf') {
+                    sh 'k6 run script.js'
+                }
+            }
+             post {
+                always {
+                    publishHTML target: [
+                        reportDir: 'tests-perf',
+                        reportFiles: 'perf-results.html',
+                        reportName: 'Performance Test Results Report'
+                    ]
+                }
+             }
+        }
     }
-}
+    post {
+        always {
+            cleanWs()
+        }
+    }
+}  
