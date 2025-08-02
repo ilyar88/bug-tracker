@@ -1,6 +1,6 @@
- pipeline {
+pipeline {
     agent any
- 
+
     stages {
         stage('Execute Unit Tests') {
             parallel {
@@ -30,11 +30,9 @@
 
                                 mkdir -p reports
                                 mv coverage.html reports/
-
                             '''
                         }
                     }
-
                     post {
                         always {
                             junit 'bugtracker-backend/test-results.xml'
@@ -64,7 +62,6 @@
                             '''
                         }
                     }
-
                     post {
                         always {
                             junit 'bugtracker-frontend/test-results.xml'
@@ -78,13 +75,13 @@
                 }
             }
         }
-        
+
         stage('Launch Application') {
             agent {
                 docker {
                     image 'docker:27.5.1'
                     reuseNode true
-                    args '-v /var/run/docker.sock:/var/run/docker.sock -u 0' 
+                    args '-v /var/run/docker.sock:/var/run/docker.sock -u 0'
                 }
             }
             steps {
@@ -103,7 +100,6 @@
             steps {
                 dir('tests-api') {
                     sh 'npx wait-port http://localhost:8080/api/health -t 30000'
-
                     sh 'npm ci'
                     sh 'npx playwright test'
                 }
@@ -159,7 +155,7 @@
                     sh 'k6 run script.js'
                 }
             }
-             post {
+            post {
                 always {
                     publishHTML target: [
                         reportDir: 'tests-perf',
@@ -167,12 +163,13 @@
                         reportName: 'Performance Test Results Report'
                     ]
                 }
-             }
+            }
         }
     }
+
     post {
         always {
             cleanWs()
         }
     }
-}  
+}
